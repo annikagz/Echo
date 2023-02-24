@@ -125,9 +125,9 @@ def split_data_into_TCN_windows(input_data, output_data, window_length=250, wind
         if output_type == 'mapping':
             output_windows.append(np.expand_dims(output_data[i + int(window_length/2), :], axis=0))
         elif output_type == 'prediction':
-            output_windows.append(output_data[i + int(window_length) + 1, :])
+            output_windows.append(np.expand_dims(output_data[i + int(window_length) + 1, :], axis=0))
     windowed_inputs = np.concatenate(input_windows, axis=0).transpose((0, 2, 1))
-    windowed_outputs = np.expand_dims(np.concatenate(output_windows), axis=-1).transpose((0, 2, 1))
+    windowed_outputs = np.expand_dims(np.concatenate(output_windows, axis=0), axis=-1).transpose((0, 2, 1))
     return windowed_inputs, windowed_outputs
 
 
@@ -152,7 +152,7 @@ def split_into_batches(input_data, output_data, batch_size):
 # DATA EXTRACTION CLASSES ==============================================================================================
 class ReferenceTrajectoryData:
     def __init__(self, subjects, list_of_speeds, list_of_muscles, joint, window_length=500, test_subject=None, batch_size=32,
-                 label_type='cycle percentage', number_of_classes=None):
+                 label_type='cycle percentage', number_of_classes=None, window_step=40):
         """
         This class will aim to prepare and extract the data necessary for the first model that creates the reference
         trajectory.
@@ -179,6 +179,7 @@ class ReferenceTrajectoryData:
         self.batch_size = batch_size
         # self.valid_leg = ['R' if dominant_leg == 'L' else 'L']
         self.number_of_classes = number_of_classes
+        self.window_step = window_step
         self.valid_knee_angle = None
         self.label = None
         self.test_knee_angle = None
@@ -191,6 +192,19 @@ class ReferenceTrajectoryData:
         self.y_test = None
         self.reference_knee_angle = None
         self.reference_label = None
+        # THIS IS FOR THE EMG DATA =====================================================================================
+        self.paretic_knee_angle = None
+        self.EMG_data = None
+        self.test_paretic_knee_angle = None
+        self.test_EMG_data = None
+        # For the EMG data of the paretic leg
+        self.EMG_train = None
+        self.EMG_val = None
+        self.EMG_test = None
+        # For the trajectory data of the paretic leg
+        self.paretic_train = None
+        self.paretic_val = None
+        self.paretic_test = None
 
         self.extract_data()
         self.get_reference_trajectory()
@@ -199,15 +213,21 @@ class ReferenceTrajectoryData:
 
     def extract_data(self):
         all_trajectory_labels = []
+        all_emg_data = []
+        all_paretic_labels = []
         for subject in self.subjects:
             paretic_leg = self.dominant_leg[subject]
-            valid_leg = ['R' if paretic_leg == 'L' else 'L'][0]
+            # valid_leg = ['R' if paretic_leg == 'L' else 'L'][0]
             for speed in self.list_of_speeds:
-                _, _, valid_knee_angle = extract_hdf5_data_to_EMG_and_labels(subject=subject, speed=speed,
-                                                                             list_of_muscles=self.list_of_muscles,
-                                                                             dominant_leg=valid_leg,
-                                                                             joint=self.joint)
+                EMG_data, paretic_knee_angle, valid_knee_angle = \
+                    extract_hdf5_data_to_EMG_and_labels(subject=subject, speed=speed,
+                                                        list_of_muscles=self.list_of_muscles, dominant_leg=paretic_leg,
+                                                        joint=self.joint)
+                all_emg_data.append(EMG_data)
+                all_paretic_labels.append(paretic_knee_angle)
                 all_trajectory_labels.append(valid_knee_angle)
+        self.EMG_data = np.concatenate(all_emg_data, axis=0)
+        self.paretic_knee_angle = np.concatenate(all_paretic_labels, axis=0)
         self.valid_knee_angle = np.concatenate(all_trajectory_labels, axis=0)
         if self.label_type == 'cycle percentage':
             self.label = generate_gait_cycle_percentage(self.valid_knee_angle)
@@ -218,14 +238,20 @@ class ReferenceTrajectoryData:
             raise ValueError("Label type can only be cycle percentage or key events or percentage based classes")
         if self.test_subject is not None:
             test_paretic_leg = self.dominant_leg[self.test_subject]
-            test_valid_leg = ['R' if test_paretic_leg == 'L' else 'L'][0]
+            # test_valid_leg = ['R' if test_paretic_leg == 'L' else 'L'][0]
             all_trajectory_labels = []
+            all_emg_data = []
+            all_paretic_labels = []
             for speed in self.list_of_speeds:
-                _, _, valid_knee_angle = extract_hdf5_data_to_EMG_and_labels(subject=self.test_subject, speed=speed,
-                                                                             list_of_muscles=self.list_of_muscles,
-                                                                             dominant_leg=test_valid_leg,
-                                                                             joint=self.joint)
+                EMG_data, paretic_knee_angle, valid_knee_angle = \
+                    extract_hdf5_data_to_EMG_and_labels(subject=self.test_subject, speed=speed,
+                                                        list_of_muscles=self.list_of_muscles,
+                                                        dominant_leg=test_paretic_leg, joint=self.joint)
+                all_emg_data.append(EMG_data)
+                all_paretic_labels.append(paretic_knee_angle)
                 all_trajectory_labels.append(valid_knee_angle)
+            self.test_EMG_data = np.concatenate(all_emg_data, axis=0)
+            self.test_paretic_knee_angle = np.concatenate(all_paretic_labels, axis=0)
             self.test_knee_angle = np.concatenate(all_trajectory_labels, axis=0)
             if self.label_type == 'cycle percentage':
                 self.test_label = generate_gait_cycle_percentage(self.test_knee_angle)
@@ -241,36 +267,72 @@ class ReferenceTrajectoryData:
         (n_batches, batch_size, 1, 1) for the training, and then (n_reps, n_channels, window_length) and (n_reps, 1, 1)
         for testing
         """
-        self.valid_knee_angle, self.label = split_data_into_TCN_windows(self.valid_knee_angle, self.label,
-                                                                        window_length=self.window_length)
 
+        self.valid_knee_angle, self.label = split_data_into_TCN_windows(self.valid_knee_angle, self.label,
+                                                                        window_length=self.window_length,
+                                                                        window_step=self.window_step,
+                                                                        output_type='mapping')
+
+        self.EMG_data, self.paretic_knee_angle = split_data_into_TCN_windows(self.EMG_data, self.paretic_knee_angle,
+                                                                             window_length=self.window_length,
+                                                                             window_step=self.window_step,
+                                                                             output_type='prediction')
         if self.test_subject is not None:
             # if we have a reserve test subject, then we can just shuffle all the other subjects together
-            self.x_test, self.y_test = split_data_into_TCN_windows(self.test_knee_angle, self.test_label)
+            self.x_test, self.y_test = split_data_into_TCN_windows(self.test_knee_angle, self.test_label,
+                                                                   output_type='mapping')
+            self.EMG_test, self.paretic_test = split_data_into_TCN_windows(self.test_EMG_data,
+                                                                           self.test_paretic_knee_angle,
+                                                                           output_type='prediction')
             # SPLIT INTO BATCHES
             self.valid_knee_angle, self.label = split_into_batches(self.valid_knee_angle, self.label, self.batch_size)
+            self.EMG_data, self.paretic_knee_angle = split_into_batches(self.EMG_data, self.paretic_knee_angle,
+                                                                        self.batch_size)
             # SPLIT INTO TRAIN VAL
             self.x_train, self.x_val, self.y_train, self.y_val = train_test_split(self.valid_knee_angle, self.label,
                                                                                   train_size=0.8, random_state=42,
-                                                                                  shuffle=True)  # this one
+                                                                                  shuffle=True)
+            self.EMG_train, self.EMG_val, self.paretic_train, self.paretic_val = train_test_split(self.EMG_data,
+                                                                                                  self.paretic_knee_angle,
+                                                                                                  train_size=0.8,
+                                                                                                  random_state=42,
+                                                                                                  shuffle=True)
         else:
             self.x_train, self.x_test, self.y_train, self.y_test = train_test_split(self.valid_knee_angle, self.label,
                                                                                     train_size=0.9, shuffle=False)
+            self.EMG_train, self.EMG_test, self.paretic_train, self.paretic_test = train_test_split(self.EMG_data,
+                                                                                                    self.paretic_knee_angle,
+                                                                                                    train_size=0.9,
+                                                                                                    shuffle=False)
             # SPLIT INTO BATCHES
             self.x_train, self.y_train = split_into_batches(self.x_train, self.y_train, self.batch_size)
             self.x_train, self.x_val, self.y_train, self.y_val = train_test_split(self.x_train, self.y_train,
                                                                                   train_size=0.9, random_state=42,
-                                                                                  shuffle=True)  # this one
+                                                                                  shuffle=True)
+            self.EMG_train, self.paretic_train = split_into_batches(self.EMG_train, self.paretic_train, self.batch_size)
+            self.EMG_train, self.EMG_val, self.paretic_train, self.paretic_val = train_test_split(self.EMG_train,
+                                                                                                  self.paretic_train,
+                                                                                                  train_size=0.9,
+                                                                                                  random_state=42,
+                                                                                                  shuffle=True)
         self.x_test = np.expand_dims(self.x_test, axis=1)
         self.y_test = np.expand_dims(self.y_test, axis=1)
+        self.EMG_test = np.expand_dims(self.EMG_test, axis=1)
+        self.paretic_test = np.expand_dims(self.paretic_test, axis=1)
 
     def convert_data_into_tensors(self):
         self.x_train = torch.autograd.Variable(torch.from_numpy(self.x_train), requires_grad=False)
         self.y_train = torch.autograd.Variable(torch.from_numpy(self.y_train), requires_grad=False)
         self.x_val = torch.autograd.Variable(torch.from_numpy(self.x_val), requires_grad=False)
         self.y_val = torch.autograd.Variable(torch.from_numpy(self.y_val), requires_grad=False)
+        self.EMG_train = torch.autograd.Variable(torch.from_numpy(self.EMG_train), requires_grad=False)
+        self.paretic_train = torch.autograd.Variable(torch.from_numpy(self.paretic_train), requires_grad=False)
+        self.EMG_val = torch.autograd.Variable(torch.from_numpy(self.EMG_val), requires_grad=False)
+        self.paretic_val = torch.autograd.Variable(torch.from_numpy(self.paretic_val), requires_grad=False)
         self.x_test = torch.from_numpy(self.x_test)
         self.y_test = torch.from_numpy(self.y_test)
+        self.EMG_test = torch.from_numpy(self.EMG_test)
+        self.paretic_test = torch.from_numpy(self.paretic_test)
 
     def get_reference_trajectory(self):
         self.reference_knee_angle, self.reference_label = generate_reference_cycle(self.valid_knee_angle,
@@ -286,20 +348,18 @@ if __name__ == "__main__":
                        "GM",
                        "GL"]
     list_joint_angles = ["HipAngles", "KneeAngles", "AnkleAngles"]
-    EMG, paretic, valid = extract_hdf5_data_to_EMG_and_labels('DS02', 'R', list_of_muscles=list_of_muscles,
-                                                              dominant_leg='R', joint='Knee')
-
-    plt.plot(paretic)
-    plt.plot(valid)
-    plt.show()
-    exit()
-    # generate_reference_cycle(valid, label_type='key events')
 
     trajectory_data = ReferenceTrajectoryData(['DS01'], list_of_speeds, list_of_muscles, 'Knee',
-                                              label_type='percentage based classes', number_of_classes=20)
+                                              label_type='percentage based classes', number_of_classes=10)
 
+    print("THIS IS FOR THE TRAJECTORY GENERATION")
     print(trajectory_data.x_train.shape)
     print(trajectory_data.y_train.shape)
     print(trajectory_data.x_test.shape)
     print(trajectory_data.y_test.shape)
+    print("THIS IS FOR THE GAIT PREDICTION")
+    print(trajectory_data.EMG_train.shape)
+    print(trajectory_data.paretic_train.shape)
+    print(trajectory_data.EMG_test.shape)
+    print(trajectory_data.paretic_test.shape)
 
