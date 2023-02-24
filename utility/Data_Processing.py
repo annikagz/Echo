@@ -70,7 +70,6 @@ def generate_gait_cycle_percentage(time_series_label):
 def generate_percentage_based_classes(time_series_label, number_of_classes):
     gait_cycle_percentages = generate_gait_cycle_percentage(time_series_label)
     class_thresholds = np.linspace(0, 100, num=number_of_classes+1)
-    print(class_thresholds)
     percentage_based_classes = []
     for i in range(len(gait_cycle_percentages)):
         if gait_cycle_percentages[i] == class_thresholds[0]:

@@ -402,7 +402,7 @@ if __name__== "__main__":
     window_step = 10
     # trajectory_data = ReferenceTrajectoryData([list_of_subjects[0]], list_of_speeds, list_of_muscles, 'Knee', 'R',
     #                                           label_type='cycle percentage')
-    classes = [10]
+    classes = [5]
     for nclass in classes:
         trajectory_data = ReferenceTrajectoryData(['DS01'], list_of_speeds[0:-1], list_of_muscles, 'Knee',
                                                   window_length=500, label_type='percentage based classes',
